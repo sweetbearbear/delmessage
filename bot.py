@@ -15,69 +15,119 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# ===== 加载配置文件 =====
-with open("config.json", "r", encoding="utf-8") as f:
-    config = json.load(f)
+# ===== 加载配置 =====
+CONFIG_PATH = "config.json"
+
+def load_config():
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_config(config_data):
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config_data, f, indent=2, ensure_ascii=False)
+    logging.info("✅ 配置已保存到 config.json")
+
+config = load_config()
 
 TOKEN = config["token"]
-WHITELIST = set(config["whitelist"])         # 可以私聊机器人的人（如你自己）
-BLACKLIST = set(config["blacklist"])         # 黑名单 UID
-ALLOWED_GROUPS = set(config["allowed_groups"])  # 允许响应的群组 ID
+WHITELIST = set(config["whitelist"])
+BLACKLIST = set(config["blacklist"])
+ALLOWED_GROUPS = set(config["allowed_groups"])
 
 
-# ===== 私聊静默处理 =====
+# ===== 私聊处理（身份判断 + 指令响应） =====
 async def private_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in WHITELIST:
-        return  # 静默无响应
-    await update.message.reply_text("✅ 你是授权用户，Bot 已准备好！")
+        return  # 静默处理
+    await update.message.reply_text("✅ 你是授权用户，可以使用控制命令。")
 
 
-# ===== 群聊黑名单自动删除 =====
+# ===== 群消息处理：黑名单秒删 =====
 async def group_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
 
     if chat_id not in ALLOWED_GROUPS:
-        return  # 群不在允许列表中，静默
+        return
     if user_id in BLACKLIST:
         try:
             await update.message.delete()
-            logging.info(f"已删除黑名单用户 {user_id} 在群 {chat_id} 的消息")
+            logging.info(f"已删除黑名单用户 {user_id} 在群 {chat_id} 的发言")
         except Exception as e:
             logging.warning(f"⚠️ 删除失败：{e}")
 
 
-# ===== 初始化授权群组 =====
+# ===== 群授权命令（只能你用） =====
 async def initgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
 
     if user_id not in WHITELIST:
-        return  # 只有白名单用户能初始化群
+        return
 
     if chat_id not in ALLOWED_GROUPS:
         ALLOWED_GROUPS.add(chat_id)
+        config["allowed_groups"] = list(ALLOWED_GROUPS)
+        save_config(config)
         await update.message.reply_text("✅ 本群已授权，Bot 功能启用。")
-        logging.info(f"群组 {chat_id} 被 {user_id} 授权启用")
     else:
-        await update.message.reply_text("✅ 本群已在授权列表中，无需重复操作。")
+        await update.message.reply_text("✅ 本群已经启用，无需重复操作。")
+
+
+# ===== 私聊命令：添加黑名单 =====
+async def banuid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in WHITELIST:
+        return
+
+    if len(context.args) != 1 or not context.args[0].isdigit():
+        await update.message.reply_text("❌ 格式错误：请使用 /banuid <uid>")
+        return
+
+    target_uid = int(context.args[0])
+    if target_uid in BLACKLIST:
+        await update.message.reply_text(f"⚠️ UID {target_uid} 已在黑名单中。")
+        return
+
+    BLACKLIST.add(target_uid)
+    config["blacklist"] = list(BLACKLIST)
+    save_config(config)
+    await update.message.reply_text(f"✅ 已添加 UID {target_uid} 到黑名单。")
+
+
+# ===== 私聊命令：移除黑名单 =====
+async def unbanuid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in WHITELIST:
+        return
+
+    if len(context.args) != 1 or not context.args[0].isdigit():
+        await update.message.reply_text("❌ 格式错误：请使用 /unbanuid <uid>")
+        return
+
+    target_uid = int(context.args[0])
+    if target_uid not in BLACKLIST:
+        await update.message.reply_text(f"⚠️ UID {target_uid} 不在黑名单中。")
+        return
+
+    BLACKLIST.remove(target_uid)
+    config["blacklist"] = list(BLACKLIST)
+    save_config(config)
+    await update.message.reply_text(f"✅ 已从黑名单中移除 UID {target_uid}。")
 
 
 # ===== 主程序入口 =====
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # 私聊处理器
+    app.add_handler(CommandHandler("initgroup", initgroup))
+    app.add_handler(CommandHandler("banuid", banuid))
+    app.add_handler(CommandHandler("unbanuid", unbanuid))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE, private_handler))
-
-    # 群聊消息处理器（自动删除黑名单消息）
     app.add_handler(MessageHandler(filters.ChatType.GROUPS, group_guard))
 
-    # 初始化群授权指令（只允许白名单用户使用）
-    app.add_handler(CommandHandler("initgroup", initgroup))
-
-    logging.info("🤖 Bot 已启动，正在监听中...")
+    logging.info("🤖 Bot 启动成功，开始监听。")
     app.run_polling()
 
 
