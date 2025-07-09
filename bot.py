@@ -1,3 +1,4 @@
+import asyncio 
 import json
 import logging
 from telegram import Update
@@ -43,20 +44,15 @@ async def private_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ 你是授权用户，可以使用控制命令。")
 
 
-# ===== 群消息处理：黑名单秒删 =====
 async def group_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
     user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    message_id = update.message.message_id
 
-    if chat_id not in ALLOWED_GROUPS:
-        return
-    if user_id in BLACKLIST:
-        try:
-            await update.message.delete()
-            logging.info(f"已删除黑名单用户 {user_id} 在群 {chat_id} 的发言")
-        except Exception as e:
-            logging.warning(f"⚠️ 删除失败：{e}")
-
+    if chat_id in ALLOWED_GROUPS and user_id in BLACKLIST:
+        asyncio.create_task(
+            context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        )
 
 # ===== 群授权命令（只能你用） =====
 async def initgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
