@@ -1,36 +1,85 @@
-# bot.py
-import os
-import time
-import threading
-from telegram import Bot
-from dotenv import load_dotenv
-from check_live import is_streaming
-from record import record_stream_and_send
+import json
+import logging
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    ContextTypes,
+    MessageHandler,
+    CommandHandler,
+    filters
+)
 
-load_dotenv()
+# ===== 初始化日志 =====
+logging.basicConfig(
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-LIVE_UID = os.getenv("LIVE_UID")
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL"， 600))
+# ===== 加载配置文件 =====
+with open("config.json", "r", encoding="utf-8") as f:
+    config = json.load(f)
 
-bot = Bot(token=BOT_TOKEN)
+TOKEN = config["token"]
+WHITELIST = set(config["whitelist"])         # 可以私聊机器人的人（如你自己）
+BLACKLIST = set(config["blacklist"])         # 黑名单 UID
+ALLOWED_GROUPS = set(config["allowed_groups"])  # 允许响应的群组 ID
 
 
-def monitor():
-    print("📡 直播检测任务已启动...")
-    while True:
+# ===== 私聊静默处理 =====
+async def private_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in WHITELIST:
+        return  # 静默无响应
+    await update.message.reply_text("✅ 你是授权用户，Bot 已准备好！")
+
+
+# ===== 群聊黑名单自动删除 =====
+async def group_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+
+    if chat_id not in ALLOWED_GROUPS:
+        return  # 群不在允许列表中，静默
+    if user_id in BLACKLIST:
         try:
-            if is_streaming(LIVE_UID):
-                print("✅ 检测到直播开始，准备录制...")
-                record_stream_and_send(uid=LIVE_UID, bot=bot, chat_id=CHAT_ID)
-            else:
-                print("❌ 当前未开播。")
+            await update.message.delete()
+            logging.info(f"已删除黑名单用户 {user_id} 在群 {chat_id} 的消息")
         except Exception as e:
-            print(f"⚠️ 检测时发生错误: {e}")
-        time.sleep(CHECK_INTERVAL)
+            logging.warning(f"⚠️ 删除失败：{e}")
 
 
-if __name__ == '__main__':
-    thread = threading.Thread(target=monitor)
-    thread.start()
+# ===== 初始化授权群组 =====
+async def initgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+
+    if user_id not in WHITELIST:
+        return  # 只有白名单用户能初始化群
+
+    if chat_id not in ALLOWED_GROUPS:
+        ALLOWED_GROUPS.add(chat_id)
+        await update.message.reply_text("✅ 本群已授权，Bot 功能启用。")
+        logging.info(f"群组 {chat_id} 被 {user_id} 授权启用")
+    else:
+        await update.message.reply_text("✅ 本群已在授权列表中，无需重复操作。")
+
+
+# ===== 主程序入口 =====
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    # 私聊处理器
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE, private_handler))
+
+    # 群聊消息处理器（自动删除黑名单消息）
+    app.add_handler(MessageHandler(filters.ChatType.GROUPS, group_guard))
+
+    # 初始化群授权指令（只允许白名单用户使用）
+    app.add_handler(CommandHandler("initgroup", initgroup))
+
+    logging.info("🤖 Bot 已启动，正在监听中...")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
